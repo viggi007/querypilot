@@ -1,11 +1,12 @@
 """
-agents/synthesizer_agent.py — Agent 4: Synthesizer Agent
+agents/synthesizer_agent.py - Agent 4: Synthesizer Agent
 ----------------------------------------------------------
 Responsibilities:
-  - Convert raw DB result rows → clear natural-language answer
+  - Convert raw DB result rows -> clear natural-language answer
   - Optionally augment answer with relevant document context
   - Handle empty result sets gracefully
-  - Keep answers concise (3–5 sentences)
+  - Keep answers concise (3-5 sentences)
+  - Never return a blank answer (falls back to a plain summary of the rows)
 """
 
 from groq import Groq
@@ -18,7 +19,7 @@ Given a user's question, database query results, and optionally some
 relevant document excerpts, write a clear, direct natural-language answer.
 
 Guidelines:
-- Lead with the answer — state the key finding in the first sentence.
+- Lead with the answer - state the key finding in the first sentence.
 - Use specific numbers, names, and dates from the results.
 - If document context is provided and relevant, incorporate it naturally.
 - If results are empty, say "No matching records were found" and briefly
@@ -26,6 +27,10 @@ Guidelines:
 - Maximum 5 sentences. No bullet points. No markdown.
 - Do NOT repeat or mention the SQL query.
 """
+
+# Reasoning models spend part of this budget "thinking" before they write
+# the answer, so it must be well above the length of the answer itself.
+_MAX_TOKENS = 1500
 
 
 class SynthesizerAgent:
@@ -64,13 +69,24 @@ class SynthesizerAgent:
                     {"role": "user",   "content": user_msg},
                 ],
                 temperature=0.3,
-                max_tokens=350,
+                max_tokens=_MAX_TOKENS,
             )
-            answer = resp.choices[0].message.content.strip()
+
+            content = None
+            if getattr(resp, "choices", None):
+                message = getattr(resp.choices[0], "message", None)
+                content = getattr(message, "content", None)
+            answer = (content or "").strip()
+
+            # The model returned nothing (e.g. it ran out of tokens while
+            # reasoning): build a plain answer from the rows instead.
+            if not answer:
+                answer = _rows_to_plain_answer(question, columns, rows)
+
             return {"answer": answer, "error": None}
 
         except Exception as exc:
-            # Rate limit — build a plain answer from rows without Groq
+            # Rate limit - build a plain answer from rows without Groq
             if "429" in str(exc) or "rate_limit" in str(exc).lower():
                 fallback = _rows_to_plain_answer(question, columns, rows)
                 return {"answer": fallback, "error": None, "from_cache": True}
